@@ -3,9 +3,12 @@
 // people you follow are in — same data as the Spaces bar on your home timeline —
 // and alerts once per Space via notification + EmailJS.
 
+importScripts("quota.js");
+
 const DEFAULT_SETTINGS = {
   intervalMin: 5,
   handles: [], // optional filter; empty = everyone you follow
+  quotaResetDay: 1, // day of month EmailJS resets your 200 emails
   emailjs: { publicKey: "", serviceId: "", templateId: "", toEmail: "" },
 };
 
@@ -14,6 +17,7 @@ const WEB_BEARER =
   "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA";
 const KEEP_MS = 3 * 24 * 60 * 60 * 1000; // remember Spaces 3 days so none repeat
 const MAX_EMAIL_TRIES = 10;
+const REMIND_BEFORE_MS = 10 * 60 * 1000; // scheduled Space reminder lead time
 
 async function getSettings() {
   const { settings } = await chrome.storage.sync.get("settings");
@@ -51,7 +55,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
 
 // ---------- core ----------
 // `alerts` (storage.local) is both the dedupe list and the log shown in the popup.
-// Each: { id, host, title, link, ts, email: "sent" | "retrying" | "failed", error, tries }
+// Each: { id, kind: "live" | "scheduled", host, title, link, startsAt, ts,
+//         email: "sent" | "retrying" | "failed", error, tries }
+// A scheduled Space can produce two alerts: a reminder ("<id>:soon") and, once it starts, a live one ("<id>").
 
 let running = null; // alarm + "Check now" must never overlap (would double-email)
 function checkSpaces() {
@@ -70,11 +76,15 @@ async function doCheck() {
     const filter = settings.handles.map((h) => "@" + h.toLowerCase());
     const known = new Set(alerts.map((a) => a.id));
     for (const s of spaces) {
-      if (known.has(s.id) || (filter.length && !filter.includes(s.host.toLowerCase()))) continue;
-      alerts.unshift({ ...s, ts: Date.now(), email: "retrying", error: null, tries: 0 });
-      chrome.notifications.create(s.link, {
+      if (filter.length && !filter.includes(s.host.toLowerCase())) continue;
+      const scheduled = s.kind === "scheduled";
+      if (scheduled && s.startsAt - Date.now() > REMIND_BEFORE_MS) continue; // too early to remind
+      const id = scheduled ? `${s.id}:soon` : s.id;
+      if (known.has(id)) continue;
+      alerts.unshift({ ...s, id, ts: Date.now(), email: "retrying", error: null, tries: 0 });
+      chrome.notifications.create(s.link + (scheduled ? "#soon" : ""), {
         type: "basic", iconUrl: "icon128.png", priority: 2,
-        title: `${s.host} is in a Space`, message: s.title,
+        title: headline(s), message: s.title,
       });
     }
   } catch (e) {
@@ -99,10 +109,12 @@ async function doCheck() {
   const cutoff = Date.now() - KEEP_MS;
   await chrome.storage.local.set({
     alerts: alerts.filter((a) => a.ts > cutoff),
-    status: { ok: !error, error, live, ts: Date.now() },
+    status: { ok: !error, error, live, ts: Date.now(), sample: lastSample },
   });
   if (error) throw new Error(error);
 }
+
+let lastSample = null; // one raw audiospace from the last check, to verify X's format
 
 async function fetchFollowedSpaces() {
   const ct0 = await chrome.cookies.get({ url: "https://x.com", name: "ct0" });
@@ -123,10 +135,13 @@ async function fetchFollowedSpaces() {
   // Response shape is undocumented; collect every audiospace object anywhere in it.
   const users = data.users || {};
   const found = new Map();
+  let sample = null;
   (function walk(o) {
     if (!o || typeof o !== "object") return;
     const a = o.audiospace;
-    if (a?.broadcast_id) {
+    if (a?.broadcast_id && !["Ended", "TimedOut", "Canceled"].includes(a.state)) {
+      sample ??= JSON.stringify(a).slice(0, 1500); // for "Copy debug info"
+      const scheduled = a.state === "NotStarted" || (a.state !== "Running" && a.scheduled_start > Date.now());
       const name = users[a.creator_twitter_user_id]?.screen_name
         || a.participants?.admins?.[0]?.twitter_screen_name;
       found.set(a.broadcast_id, {
@@ -134,17 +149,20 @@ async function fetchFollowedSpaces() {
         title: a.title || "(untitled Space)",
         host: name ? "@" + name : "someone you follow",
         link: `https://x.com/i/spaces/${a.broadcast_id}`,
+        kind: scheduled ? "scheduled" : "live",
+        startsAt: scheduled ? a.scheduled_start || null : null,
       });
     }
     for (const v of Object.values(o)) walk(v);
   })(data);
+  lastSample = sample;
   return [...found.values()];
 }
 
 // ---------- email ----------
 async function sendEmail({ emailjs: e }, s) {
   if (!(e.publicKey && e.serviceId && e.templateId && e.toEmail)) throw new Error("EmailJS settings incomplete");
-  const subject = `${s.host} is in a Space: ${s.title}`;
+  const subject = `${headline(s)}: ${s.title}`;
   const res = await fetch("https://api.emailjs.com/api/v1.0/email/send", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -160,5 +178,26 @@ async function sendEmail({ emailjs: e }, s) {
     }),
   });
   if (!res.ok) throw new Error(`EmailJS ${res.status}: ${await res.text()}`);
+  await countEmail();
+}
+
+function headline(s) {
+  if (s.kind !== "scheduled") return `${s.host} is in a Space`;
+  const at = s.startsAt ? new Date(s.startsAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "soon";
+  return `${s.host}'s Space starts at ${at}`;
+}
+
+// emailUsage = { period: quota month start, n: emails sent in it }. Chained so
+// a test email and a check sending at the same time can't lose a count.
+let usageChain = Promise.resolve();
+function countEmail() {
+  usageChain = usageChain.then(async () => {
+    const { quotaResetDay } = await getSettings();
+    const period = quotaPeriod(quotaResetDay);
+    const { emailUsage } = await chrome.storage.local.get("emailUsage");
+    const n = emailUsage?.period === period ? emailUsage.n + 1 : 1;
+    await chrome.storage.local.set({ emailUsage: { period, n } });
+  });
+  return usageChain;
 }
 

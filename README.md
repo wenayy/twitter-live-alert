@@ -15,4 +15,6 @@ Email + Chrome notification when anyone you follow on X starts or joins a Space
 
 ## Notes
 - Checks every 5 min by default (min 2). Lower = more risk of X rate-limiting.
-- Each Space alerts once. Popup shows last check status + recent alerts.
+- Each Space alerts once; failed emails retry on every check (up to 10 tries).
+- Scheduled Spaces: reminder ~10 min before start, then a normal alert when it goes live.
+- Popup shows emails used this EmailJS month (free plan = 200). Set the reset day in Settings.

@@ -5,6 +5,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   const e = settings?.emailjs || {};
   $("handles").value = (settings?.handles || []).join(", ");
   $("interval").value = settings?.intervalMin || 5;
+  $("resetDay").value = settings?.quotaResetDay || 1;
   $("pubKey").value = e.publicKey || "";
   $("serviceId").value = e.serviceId || "";
   $("templateId").value = e.templateId || "";
@@ -19,6 +20,7 @@ $("save").onclick = async () => {
   await chrome.storage.sync.set({ settings: {
     handles: $("handles").value.split(/[\s,]+/).map((s) => s.replace(/^@/, "")).filter(Boolean),
     intervalMin: Math.max(2, parseInt($("interval").value) || 5),
+    quotaResetDay: Math.min(28, Math.max(1, parseInt($("resetDay").value) || 1)),
     emailjs: {
       publicKey: $("pubKey").value.trim(),
       serviceId: $("serviceId").value.trim(),
@@ -27,6 +29,13 @@ $("save").onclick = async () => {
     },
   } });
   show("✅ Saved", true);
+  render();
+};
+
+$("debug").onclick = async () => {
+  const { status } = await chrome.storage.local.get("status");
+  await navigator.clipboard.writeText(JSON.stringify(status, null, 2));
+  show("✅ Debug info copied — paste it to whoever is helping you", true);
 };
 
 $("check").onclick = () => run("checkNow", "Checking…", "✅ Checked");
@@ -47,7 +56,15 @@ const fmt = (ts) => new Date(ts).toLocaleString([], { month: "short", day: "nume
 const BADGE = { sent: "✓ Email sent", retrying: "⟳ Email pending — retrying", failed: "✕ Email failed" };
 
 async function render() {
-  const { status, alerts = [] } = await chrome.storage.local.get(["status", "alerts"]);
+  const { status, alerts = [], emailUsage } = await chrome.storage.local.get(["status", "alerts", "emailUsage"]);
+  const { settings } = await chrome.storage.sync.get("settings");
+
+  const period = quotaPeriod(settings?.quotaResetDay || 1);
+  const used = emailUsage?.period === period ? emailUsage.n : 0;
+  const next = new Date(period + "T00:00");
+  next.setMonth(next.getMonth() + 1);
+  $("usage").textContent = `✉️ ${used} / ${EMAIL_QUOTA} emails used · resets ${next.toLocaleDateString([], { month: "short", day: "numeric" })}`;
+  $("usage").className = used >= EMAIL_QUOTA ? "full" : used >= EMAIL_QUOTA * 0.9 ? "warn" : "";
 
   if (status) {
     $("pill").textContent = status.ok ? "● Watching" : "● Problem";
@@ -69,7 +86,11 @@ async function render() {
     card.className = "card";
     card.href = a.link;
     card.target = "_blank";
-    card.innerHTML = '<div class="top"><span class="host"></span><span class="time"></span></div><div class="title"></div><div class="badge"></div>';
+    card.innerHTML = '<div class="top"><span class="host"></span><span class="time"></span></div><div class="title"></div><div class="when"></div><div class="badge"></div>';
+    const when = card.querySelector(".when");
+    if (a.kind === "scheduled") {
+      when.textContent = "🗓 Scheduled — starts " + (a.startsAt ? fmt(a.startsAt) : "soon");
+    } else when.remove();
     card.querySelector(".host").textContent = a.host;
     card.querySelector(".time").textContent = fmt(a.ts);
     card.querySelector(".title").textContent = a.title;
