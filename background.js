@@ -40,6 +40,7 @@ chrome.runtime.onInstalled.addListener(() => {
   setupAlarm();
 });
 chrome.runtime.onStartup.addListener(setupAlarm);
+chrome.tabs.onRemoved.addListener((tabId) => finishImport(tabId)); // import tab closed mid-way
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === "sync" && changes.settings) setupAlarm();
 });
@@ -276,14 +277,27 @@ async function startImport(tabId) {
   await chrome.scripting.executeScript({ target: { tabId }, func: scrollToEnd });
 }
 
-// Runs in the tab: keep scrolling until the list stops growing for ~10s.
+// Runs in the tab: scroll until X stops sending new people. Always ends: after
+// 12s with no new people, after 5 min total, if you scroll/click/type yourself,
+// or if you leave the Following page.
 function scrollToEnd() {
-  let height = 0, still = 0;
+  if (window.__xsaScrolling) return;
+  window.__xsaScrolling = true;
+  const started = Date.now();
+  let lastNew = Date.now();
+  const onBatch = (e) => { if (e.source === window && e.data?.__xsa === "following") lastNew = Date.now(); };
+  const stop = () => {
+    clearInterval(timer);
+    window.removeEventListener("message", onBatch);
+    for (const ev of ["wheel", "keydown", "mousedown", "touchstart"]) window.removeEventListener(ev, stop, true);
+    window.__xsaScrolling = false;
+    chrome.runtime.sendMessage({ type: "importDone" });
+  };
+  window.addEventListener("message", onBatch);
+  for (const ev of ["wheel", "keydown", "mousedown", "touchstart"]) window.addEventListener(ev, stop, true);
   const timer = setInterval(() => {
+    if (!/\/following/.test(location.pathname) || Date.now() - lastNew > 12000 || Date.now() - started > 5 * 60000) return stop();
     window.scrollTo(0, document.body.scrollHeight);
-    if (document.body.scrollHeight === height) still++;
-    else { still = 0; height = document.body.scrollHeight; }
-    if (still >= 7) { clearInterval(timer); chrome.runtime.sendMessage({ type: "importDone" }); }
   }, 1500);
 }
 
