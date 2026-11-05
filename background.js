@@ -4,12 +4,14 @@
 // and alerts once per Space via notification + EmailJS.
 
 importScripts("quota.js");
+try { importScripts("defaults.local.js"); } catch {} // optional personal defaults (gitignored)
 
 const DEFAULT_SETTINGS = {
   intervalMin: 5,
   handles: [], // extra people to watch who you don't follow (everyone you follow is always watched)
   quotaResetDay: 1, // day of month EmailJS resets your 200 emails
   emailjs: { publicKey: "", serviceId: "", templateId: "", toEmail: "" },
+  ...self.LOCAL_DEFAULTS,
 };
 
 // Public bearer token the x.com web app itself uses.
@@ -31,6 +33,10 @@ async function setupAlarm() {
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.storage.local.remove(["seen", "history"]); // v2 storage, replaced by `alerts`
+  // Fresh install: save defaults so the popup shows them filled in.
+  chrome.storage.sync.get("settings").then(({ settings }) => {
+    if (!settings) chrome.storage.sync.set({ settings: DEFAULT_SETTINGS });
+  });
   setupAlarm();
 });
 chrome.runtime.onStartup.addListener(setupAlarm);
