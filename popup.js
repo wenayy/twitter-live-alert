@@ -45,26 +45,57 @@ $("csvBtn").onclick = () => inTab ? $("csvFile").click() : chrome.tabs.create({ 
 $("csvFile").onchange = async () => {
   const file = $("csvFile").files[0];
   if (!file) return;
-  const { users, handles } = parseCsv(await file.text());
-  if (users) {
-    await run({ type: "importUsers", users, source: file.name }, "Importing…", `✅ Imported ${users.length} people from ${file.name}`);
-  } else if (handles.length) {
+  const { users = [], handles = [] } = parseCsv(await file.text());
+  if (!users.length && !handles.length) {
+    show("❌ No usernames found in that file", false);
+  } else {
+    if (users.length) await chrome.runtime.sendMessage({ type: "importUsers", users, source: file.name });
     const existing = new Set($("handles").value.split(/[\s,]+/).map((h) => h.replace(/^@/, "").toLowerCase()).filter(Boolean));
     const fresh = [...new Set(handles)].filter((h) => !existing.has(h.toLowerCase()));
-    $("handles").value = [$("handles").value.trim(), ...fresh].filter(Boolean).join(", ");
-    await save();
-    show(`✅ Added ${fresh.length} @handles from ${file.name}`, true);
-  } else {
-    show("❌ No usernames found in that file", false);
+    if (fresh.length) {
+      $("handles").value = [$("handles").value.trim(), ...fresh].filter(Boolean).join(", ");
+      await save();
+    }
+    show(`✅ From ${file.name}: ${users.length} added to watch list, ${fresh.length} new @handles`, true);
   }
   $("csvFile").value = "";
 };
 
+// Everyone watched (imported lists + typed @handles) as id,username — re-importable.
+$("exportCsv").onclick = async () => {
+  const { watchList = {}, userIds = {} } = await chrome.storage.local.get(["watchList", "userIds"]);
+  const { settings } = await chrome.storage.sync.get("settings");
+  const rows = new Map(Object.entries(watchList).map(([id, name]) => [id || name, [id, name]]));
+  for (const h of settings?.handles || []) {
+    const known = /^\d+$/.test(h) ? [h, ""] : userIds[h.toLowerCase()] ? [userIds[h.toLowerCase()].id, h] : ["", h];
+    if (!rows.has(known[0] || known[1])) rows.set(known[0] || known[1], known);
+  }
+  if (!rows.size) return show("Nothing to export yet", false);
+  const csv = "id,username\n" + [...rows.values()].map(([id, name]) => `${id},${name}`).join("\n") + "\n";
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+  a.download = `x-space-alert-watchlist-${new Date().toLocaleDateString("en-CA")}.csv`;
+  a.click();
+  show(`✅ Exported ${rows.size} people`, true);
+};
+
+function splitCsvLine(line) {
+  const cells = [""];
+  let quoted = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (c === '"' && quoted && line[i + 1] === '"') { cells[cells.length - 1] += '"'; i++; }
+    else if (c === '"') quoted = !quoted;
+    else if (c === "," && !quoted) cells.push("");
+    else cells[cells.length - 1] += c;
+  }
+  return cells.map((c) => c.trim());
+}
+
 // Header row with an id column + a username column -> { users }; otherwise
 // every cell that looks like a handle (or x.com/handle link) -> { handles }.
 function parseCsv(text) {
-  const rows = text.split(/\r?\n/).filter((l) => l.trim()).map((line) =>
-    [...line.matchAll(/(?:^|,)("(?:[^"]|"")*"|[^,]*)/g)].map((m) => m[1].replace(/^"|"$/g, "").replace(/""/g, '"').trim()));
+  const rows = text.split(/\r?\n/).filter((l) => l.trim()).map(splitCsvLine);
   if (!rows.length) return { handles: [] };
   const header = rows[0].map((h) => h.toLowerCase().replace(/[^a-z]/g, ""));
   const idCol = header.findIndex((h) => ["id", "userid", "restid", "idstr", "twitterid"].includes(h));
@@ -72,9 +103,10 @@ function parseCsv(text) {
   const handleOf = (c) => c.replace(/^@/, "").replace(/^https?:\/\/(www\.)?(x|twitter)\.com\//i, "").split(/[/?#]/)[0];
 
   if (idCol >= 0 && nameCol >= 0) {
-    const users = rows.slice(1).map((r) => ({ id: r[idCol], name: handleOf(r[nameCol] || "") }))
-      .filter((u) => /^\d+$/.test(u.id) && u.name);
-    if (users.length) return { users };
+    const all = rows.slice(1).map((r) => ({ id: r[idCol] || "", name: handleOf(r[nameCol] || "") })).filter((u) => u.name);
+    const users = all.filter((u) => /^\d+$/.test(u.id));
+    const handles = all.filter((u) => !/^\d+$/.test(u.id)).map((u) => u.name).filter((h) => /^\w{1,15}$/.test(h));
+    return { users, handles }; // rows without an id get looked up like typed handles
   }
   const cells = nameCol >= 0 ? rows.slice(1).map((r) => r[nameCol] || "") : rows.flat();
   return { handles: cells.map(handleOf).filter((h) => /^\w{1,15}$/.test(h) && !/^\d+$/.test(h)) };
