@@ -1,7 +1,8 @@
 # X Space Alert — Chrome extension
 
 Email + Chrome notification when anyone you follow on X starts or joins a Space
-(same list as the Spaces bar on your x.com home). Runs while Chrome is open.
+(same list as the Spaces bar on your x.com home), plus any extra @handles you
+add in Settings that you don't follow. Runs while Chrome is open.
 
 ## Install
 1. `chrome://extensions` → Developer mode → **Load unpacked** → this folder.

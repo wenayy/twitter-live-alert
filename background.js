@@ -7,7 +7,7 @@ importScripts("quota.js");
 
 const DEFAULT_SETTINGS = {
   intervalMin: 5,
-  handles: [], // optional filter; empty = everyone you follow
+  handles: [], // extra people to watch who you don't follow (everyone you follow is always watched)
   quotaResetDay: 1, // day of month EmailJS resets your 200 emails
   emailjs: { publicKey: "", serviceId: "", templateId: "", toEmail: "" },
 };
@@ -68,15 +68,17 @@ function checkSpaces() {
 async function doCheck() {
   const settings = await getSettings();
   const { alerts = [] } = await chrome.storage.local.get("alerts");
-  let error = null, live = 0;
+  lastSample = null;
+  const results = await Promise.allSettled([fetchFollowedSpaces(), fetchWatchedSpaces(settings.handles)]);
+  const errors = results.filter((r) => r.status === "rejected").map((r) => String(r.reason?.message || r.reason));
+  const error = errors.length ? errors.join(" · ") : null;
+  const spaces = [...new Map(results.flatMap((r) => r.value || []).map((s) => [s.id, s])).values()];
+  const live = spaces.length;
+  const found = spaces.map((s) => `${s.host} — ${s.title}${s.kind === "scheduled" ? " (scheduled)" : ""}`);
 
-  try {
-    const spaces = await fetchFollowedSpaces();
-    live = spaces.length;
-    const filter = settings.handles.map((h) => "@" + h.toLowerCase());
+  {
     const known = new Set(alerts.map((a) => a.id));
     for (const s of spaces) {
-      if (filter.length && !filter.includes(s.host.toLowerCase())) continue;
       const scheduled = s.kind === "scheduled";
       if (scheduled && s.startsAt - Date.now() > REMIND_BEFORE_MS) continue; // too early to remind
       const id = scheduled ? `${s.id}:soon` : s.id;
@@ -87,8 +89,6 @@ async function doCheck() {
         title: headline(s), message: s.title,
       });
     }
-  } catch (e) {
-    error = String(e.message || e);
   }
   await chrome.storage.local.set({ alerts }); // save before emailing so a crash can't re-alert
 
@@ -109,18 +109,49 @@ async function doCheck() {
   const cutoff = Date.now() - KEEP_MS;
   await chrome.storage.local.set({
     alerts: alerts.filter((a) => a.ts > cutoff),
-    status: { ok: !error, error, live, ts: Date.now(), sample: lastSample },
+    status: { ok: !error, error, live, found, ts: Date.now(), sample: lastSample },
   });
   if (error) throw new Error(error);
 }
 
 let lastSample = null; // one raw audiospace from the last check, to verify X's format
 
+// Spaces from people you follow (the Spaces bar on your home timeline).
 async function fetchFollowedSpaces() {
+  return collectSpaces(await xFetch("https://x.com/i/api/fleets/v1/fleetline?only_spaces=true"), {});
+}
+
+// Spaces from extra @handles you don't follow — the same data X uses to draw the
+// purple "live" ring on avatars. One request per check for all of them.
+async function fetchWatchedSpaces(handles) {
+  if (!handles.length) return [];
+  const names = await resolveUserIds(handles); // id -> screen name
+  const ids = Object.keys(names).join(",");
+  return collectSpaces(await xFetch(`https://x.com/i/api/fleets/v1/avatar_content?user_ids=${ids}&only_spaces=true`), names);
+}
+
+// @handle -> numeric user id, looked up once and remembered. Digits are taken as an id.
+async function resolveUserIds(handles) {
+  const { userIds = {} } = await chrome.storage.local.get("userIds");
+  const missing = handles.filter((h) => !/^\d+$/.test(h) && !userIds[h.toLowerCase()]);
+  if (missing.length) {
+    const users = await xFetch(`https://x.com/i/api/1.1/users/lookup.json?screen_name=${missing.join(",")}`);
+    for (const u of users) userIds[u.screen_name.toLowerCase()] = { id: u.id_str, name: u.screen_name };
+    await chrome.storage.local.set({ userIds });
+  }
+  const names = {};
+  for (const h of handles) {
+    if (/^\d+$/.test(h)) names[h] = h;
+    else if (userIds[h.toLowerCase()]) names[userIds[h.toLowerCase()].id] = userIds[h.toLowerCase()].name;
+    else throw new Error(`X has no account @${h}`);
+  }
+  return names;
+}
+
+async function xFetch(url) {
   const ct0 = await chrome.cookies.get({ url: "https://x.com", name: "ct0" });
   if (!ct0) throw new Error("Not logged in to x.com in this browser");
-
-  const res = await fetch("https://x.com/i/api/fleets/v1/fleetline?only_spaces=true", {
+  const res = await fetch(url, {
     credentials: "include",
     headers: {
       authorization: `Bearer ${WEB_BEARER}`,
@@ -129,20 +160,24 @@ async function fetchFollowedSpaces() {
       "x-twitter-active-user": "yes",
     },
   });
-  if (!res.ok) throw new Error(`x.com returned ${res.status} — open x.com and make sure you're logged in`);
-  const data = await res.json();
+  if (!res.ok) throw new Error(`x.com ${new URL(url).pathname.split("/").pop()} returned ${res.status} — make sure you're logged in`);
+  return res.json();
+}
 
-  // Response shape is undocumented; collect every audiospace object anywhere in it.
+// X's response shapes are undocumented; collect every audiospace object anywhere.
+// `names` maps user id -> screen name; a numeric key above the Space (avatar_content
+// is keyed by user id) names the watched person when the creator id doesn't.
+function collectSpaces(data, names) {
   const users = data.users || {};
+  const nameOf = (id) => names[id] || users[id]?.screen_name;
   const found = new Map();
-  let sample = null;
-  (function walk(o) {
+  (function walk(o, ctxId) {
     if (!o || typeof o !== "object") return;
     const a = o.audiospace;
     if (a?.broadcast_id && !["Ended", "TimedOut", "Canceled"].includes(a.state)) {
-      sample ??= JSON.stringify(a).slice(0, 1500); // for "Copy debug info"
+      lastSample ??= JSON.stringify(a).slice(0, 1500); // for "Copy debug info"
       const scheduled = a.state === "NotStarted" || (a.state !== "Running" && a.scheduled_start > Date.now());
-      const name = users[a.creator_twitter_user_id]?.screen_name
+      const name = (names[ctxId] && nameOf(ctxId)) || nameOf(a.creator_twitter_user_id)
         || a.participants?.admins?.[0]?.twitter_screen_name;
       found.set(a.broadcast_id, {
         id: a.broadcast_id,
@@ -153,9 +188,8 @@ async function fetchFollowedSpaces() {
         startsAt: scheduled ? a.scheduled_start || null : null,
       });
     }
-    for (const v of Object.values(o)) walk(v);
+    for (const [k, v] of Object.entries(o)) walk(v, /^\d+$/.test(k) ? k : ctxId);
   })(data);
-  lastSample = sample;
   return [...found.values()];
 }
 

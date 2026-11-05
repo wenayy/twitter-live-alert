@@ -73,6 +73,7 @@ async function render() {
       ? `Checked ${fmt(status.ts)} · ${status.live} live Space(s) right now`
       : `${fmt(status.ts)}: ${status.error}`;
     $("statusText").className = status.ok ? "" : "err";
+    $("found").textContent = status.found?.length ? "Live now (from X): " + status.found.join(" · ") : "";
   }
 
   const box = $("alerts");

@@ -43,6 +43,7 @@
 <body>
   <header><h1>🎙️ X Space Alert</h1><span id="pill" class="pill">…</span></header>
   <div id="statusText">Not checked yet</div>
+  <div id="found" style="font-size:12px;color:var(--dim);margin:-4px 0 10px"></div>
   <div id="usage"></div>
 
   <div class="row">
@@ -56,8 +57,8 @@
 
   <details id="settingsBox">
     <summary>Settings</summary>
-    <label>Only these @handles (comma or new line, @ optional; empty = everyone you follow)</label>
-    <textarea id="handles" placeholder="empty = everyone you follow"></textarea>
+    <label>Also watch these @handles you DON'T follow (comma or new line). Everyone you follow is always watched — no need to add them.</label>
+    <textarea id="handles" placeholder="elonmusk, @naval"></textarea>
     <label>Check every (minutes, min 2)</label>
     <input type="number" id="interval" min="2" value="5">
     <label>EmailJS 200-email month resets on day (see EmailJS dashboard, e.g. 3)</label>
