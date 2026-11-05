@@ -4,7 +4,7 @@
   "version": "2.0.0",
   "description": "Email + notification when someone you follow on X starts or joins a Space.",
   "permissions": ["storage", "alarms", "notifications", "cookies"],
-  "host_permissions": ["https://x.com/*", "https://api.emailjs.com/*"],
+  "host_permissions": ["https://x.com/*", "https://syndication.twitter.com/*", "https://api.emailjs.com/*"],
   "background": { "service_worker": "background.js" },
   "action": { "default_popup": "popup.html", "default_title": "X Space Alert" },
   "icons": { "16": "icon16.png", "48": "icon48.png", "128": "icon128.png" }

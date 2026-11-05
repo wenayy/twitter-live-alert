@@ -134,18 +134,33 @@ async function fetchWatchedSpaces(handles) {
 async function resolveUserIds(handles) {
   const { userIds = {} } = await chrome.storage.local.get("userIds");
   const missing = handles.filter((h) => !/^\d+$/.test(h) && !userIds[h.toLowerCase()]);
-  if (missing.length) {
-    const users = await xFetch(`https://x.com/i/api/1.1/users/lookup.json?screen_name=${missing.join(",")}`);
-    for (const u of users) userIds[u.screen_name.toLowerCase()] = { id: u.id_str, name: u.screen_name };
-    await chrome.storage.local.set({ userIds });
+  for (const h of missing) {
+    const id = await lookupUserId(h);
+    if (id) userIds[h.toLowerCase()] = { id, name: h };
   }
+  if (missing.length) await chrome.storage.local.set({ userIds });
   const names = {};
   for (const h of handles) {
     if (/^\d+$/.test(h)) names[h] = h;
     else if (userIds[h.toLowerCase()]) names[userIds[h.toLowerCase()].id] = userIds[h.toLowerCase()].name;
-    else throw new Error(`X has no account @${h}`);
+    else throw new Error(`Couldn't find @${h} — check spelling, or enter their numeric user ID (tweeterid.com)`);
   }
   return names;
+}
+
+// @handle -> user id via X's public embed page for that profile (no login needed).
+// Returns null if X can't find it; then the user can enter the numeric id instead.
+async function lookupUserId(handle) {
+  const res = await fetch(`https://syndication.twitter.com/srv/timeline-profile/screen-name/${encodeURIComponent(handle)}`);
+  if (!res.ok) throw new Error(`Couldn't look up @${handle} (X ${res.status}) — enter their numeric user ID instead (tweeterid.com)`);
+  const json = (await res.text()).match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/)?.[1];
+  let id = null;
+  (function walk(o) {
+    if (id || !o || typeof o !== "object") return;
+    if (typeof o.screen_name === "string" && o.screen_name.toLowerCase() === handle.toLowerCase() && o.id_str) id = o.id_str;
+    else for (const v of Object.values(o)) walk(v);
+  })(json ? JSON.parse(json) : null);
+  return id;
 }
 
 async function xFetch(url) {
@@ -160,8 +175,24 @@ async function xFetch(url) {
       "x-twitter-active-user": "yes",
     },
   });
-  if (!res.ok) throw new Error(`x.com ${new URL(url).pathname.split("/").pop()} returned ${res.status} — make sure you're logged in`);
+  if (!res.ok) {
+    const what = new URL(url).pathname.split("/").pop();
+    throw new Error(`x.com ${what} returned ${res.status}` + (res.status === 401 || res.status === 403 ? " — log in to x.com" : ""));
+  }
   return res.json();
+}
+
+// First screen name anywhere inside `o` (admins/host come before listeners in X's data).
+function findScreenName(o) {
+  if (!o || typeof o !== "object") return null;
+  for (const [k, v] of Object.entries(o)) {
+    if ((k === "screen_name" || k === "twitter_screen_name") && typeof v === "string") return v;
+  }
+  for (const v of Object.values(o)) {
+    const n = findScreenName(v);
+    if (n) return n;
+  }
+  return null;
 }
 
 // X's response shapes are undocumented; collect every audiospace object anywhere.
@@ -175,10 +206,10 @@ function collectSpaces(data, names) {
     if (!o || typeof o !== "object") return;
     const a = o.audiospace;
     if (a?.broadcast_id && !["Ended", "TimedOut", "Canceled"].includes(a.state)) {
-      lastSample ??= JSON.stringify(a).slice(0, 1500); // for "Copy debug info"
+      lastSample ??= JSON.stringify(o).slice(0, 4000); // for "Copy debug info"
       const scheduled = a.state === "NotStarted" || (a.state !== "Running" && a.scheduled_start > Date.now());
       const name = (names[ctxId] && nameOf(ctxId)) || nameOf(a.creator_twitter_user_id)
-        || a.participants?.admins?.[0]?.twitter_screen_name;
+        || a.participants?.admins?.[0]?.twitter_screen_name || findScreenName(a) || findScreenName(o);
       found.set(a.broadcast_id, {
         id: a.broadcast_id,
         title: a.title || "(untitled Space)",
