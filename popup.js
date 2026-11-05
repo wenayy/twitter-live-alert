@@ -10,14 +10,16 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("serviceId").value = e.serviceId || "";
   $("templateId").value = e.templateId || "";
   $("toEmail").value = e.toEmail || "";
-  $("settingsBox").open = !(e.publicKey && e.serviceId && e.templateId && e.toEmail);
+  $("settingsBox").open = location.hash === "#settings" || !(e.publicKey && e.serviceId && e.templateId && e.toEmail);
   render();
 });
 
 chrome.storage.onChanged.addListener((_c, area) => { if (area === "local") render(); });
 
-$("save").onclick = async () => {
-  await chrome.storage.sync.set({ settings: {
+$("save").onclick = save;
+
+async function save() {
+  try { await chrome.storage.sync.set({ settings: {
     handles: $("handles").value.split(/[\s,]+/).map((s) => s.replace(/^@/, "")).filter(Boolean),
     intervalMin: Math.max(2, parseInt($("interval").value) || 5),
     quotaResetDay: Math.min(28, Math.max(1, parseInt($("resetDay").value) || 1)),
@@ -27,10 +29,56 @@ $("save").onclick = async () => {
       templateId: $("templateId").value.trim(),
       toEmail: $("toEmail").value.trim(),
     },
-  } });
+  } }); } catch (e) {
+    return show("❌ Couldn't save: " + e.message + " (too many @handles? import a CSV with ids instead)", false);
+  }
   show("✅ Saved", true);
   render();
+}
+
+// ---------- CSV import ----------
+// A file picker closes the toolbar popup on some systems, so pick the file from a full tab.
+const inTab = new URLSearchParams(location.search).has("tab");
+if (inTab) document.body.style.width = "420px";
+$("csvBtn").onclick = () => inTab ? $("csvFile").click() : chrome.tabs.create({ url: "popup.html?tab#settings" });
+
+$("csvFile").onchange = async () => {
+  const file = $("csvFile").files[0];
+  if (!file) return;
+  const { users, handles } = parseCsv(await file.text());
+  if (users) {
+    await run({ type: "importUsers", users, source: file.name }, "Importing…", `✅ Imported ${users.length} people from ${file.name}`);
+  } else if (handles.length) {
+    const existing = new Set($("handles").value.split(/[\s,]+/).map((h) => h.replace(/^@/, "").toLowerCase()).filter(Boolean));
+    const fresh = [...new Set(handles)].filter((h) => !existing.has(h.toLowerCase()));
+    $("handles").value = [$("handles").value.trim(), ...fresh].filter(Boolean).join(", ");
+    await save();
+    show(`✅ Added ${fresh.length} @handles from ${file.name}`, true);
+  } else {
+    show("❌ No usernames found in that file", false);
+  }
+  $("csvFile").value = "";
 };
+
+// Header row with an id column + a username column -> { users }; otherwise
+// every cell that looks like a handle (or x.com/handle link) -> { handles }.
+function parseCsv(text) {
+  const rows = text.split(/\r?\n/).filter((l) => l.trim()).map((line) =>
+    [...line.matchAll(/(?:^|,)("(?:[^"]|"")*"|[^,]*)/g)].map((m) => m[1].replace(/^"|"$/g, "").replace(/""/g, '"').trim()));
+  if (!rows.length) return { handles: [] };
+  const header = rows[0].map((h) => h.toLowerCase().replace(/[^a-z]/g, ""));
+  const idCol = header.findIndex((h) => ["id", "userid", "restid", "idstr", "twitterid"].includes(h));
+  const nameCol = header.findIndex((h) => ["username", "screenname", "handle", "twitterhandle", "user", "twitter"].includes(h));
+  const handleOf = (c) => c.replace(/^@/, "").replace(/^https?:\/\/(www\.)?(x|twitter)\.com\//i, "").split(/[/?#]/)[0];
+
+  if (idCol >= 0 && nameCol >= 0) {
+    const users = rows.slice(1).map((r) => ({ id: r[idCol], name: handleOf(r[nameCol] || "") }))
+      .filter((u) => /^\d+$/.test(u.id) && u.name);
+    if (users.length) return { users };
+  }
+  const cells = nameCol >= 0 ? rows.slice(1).map((r) => r[nameCol] || "") : rows.flat();
+  return { handles: cells.map(handleOf).filter((h) => /^\w{1,15}$/.test(h) && !/^\d+$/.test(h)) };
+}
 
 $("debug").onclick = async () => {
   const { status } = await chrome.storage.local.get("status");
@@ -68,7 +116,7 @@ async function render() {
   $("imported").textContent = importState?.running
     ? `⏳ Importing @${importState.account}'s Following… ${importState.added} added so far`
     : total
-      ? `${total} people watched` + (importState ? ` · last import @${importState.account} added ${importState.added}` : "")
+      ? `${total} people watched` + (importState ? ` · last import ${importState.csv ? "" : "@"}${importState.account} added ${importState.added}` : "")
       : "None yet";
   const { settings } = await chrome.storage.sync.get("settings");
 

@@ -59,6 +59,11 @@
     <summary>Settings</summary>
     <label>Also watch these @handles you DON'T follow (comma or new line). Everyone you follow is always watched — no need to add them. If a handle can't be found, use their numeric user ID (tweeterid.com).</label>
     <textarea id="handles" placeholder="elonmusk, @naval"></textarea>
+    <div class="row">
+      <button id="csvBtn">Import CSV file</button>
+      <input type="file" id="csvFile" accept=".csv,.txt,text/csv" hidden>
+    </div>
+    <div style="font-size:11px;color:var(--dim);margin-top:4px">CSV with id + username columns → added straight to the watch list. Usernames only → added to this box.</div>
     <label>Check every (minutes, min 2)</label>
     <input type="number" id="interval" min="2" value="5">
     <label>Imported from Following lists (watched on any account you switch to)</label>

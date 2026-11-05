@@ -55,6 +55,7 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
       }))
     : msg.type === "startImport" ? startImport(msg.tabId)
     : msg.type === "followingBatch" ? addFollowing(sender.tab?.id, msg.users)
+    : msg.type === "importUsers" ? importUsers(msg.users, msg.source)
     : msg.type === "importDone" ? finishImport(sender.tab?.id)
     : msg.type === "clearImported" ? chrome.storage.local.set({ watchList: {}, importState: null })
     : null;
@@ -79,8 +80,10 @@ async function doCheck() {
   const settings = await getSettings();
   const { alerts = [] } = await chrome.storage.local.get("alerts");
   lastSample = null;
+  watchWarnings = [];
   const results = await Promise.allSettled([fetchFollowedSpaces(), fetchWatchedSpaces(settings.handles)]);
   const errors = results.filter((r) => r.status === "rejected").map((r) => String(r.reason?.message || r.reason));
+  errors.push(...watchWarnings);
   const error = errors.length ? errors.join(" · ") : null;
   const spaces = [...new Map(results.flatMap((r) => r.value || []).map((s) => [s.id, s])).values()];
   const live = spaces.length;
@@ -147,19 +150,32 @@ async function fetchWatchedSpaces(handles) {
 }
 
 // @handle -> numeric user id, looked up once and remembered. Digits are taken as an id.
+// At most LOOKUPS_PER_CHECK new lookups per check, so a big list doesn't hammer X;
+// handles not resolved yet are reported in `watchWarnings` and retried next check.
+const LOOKUPS_PER_CHECK = 10;
+let watchWarnings = [];
+
 async function resolveUserIds(handles) {
   const { userIds = {} } = await chrome.storage.local.get("userIds");
   const missing = handles.filter((h) => !/^\d+$/.test(h) && !userIds[h.toLowerCase()]);
-  for (const h of missing) {
-    const id = await lookupUserId(h);
-    if (id) userIds[h.toLowerCase()] = { id, name: h };
+  for (const h of missing.slice(0, LOOKUPS_PER_CHECK)) {
+    try {
+      const id = await lookupUserId(h);
+      if (id) userIds[h.toLowerCase()] = { id, name: h };
+      else watchWarnings.push(`Couldn't find @${h} — check spelling or use their numeric ID (tweeterid.com)`);
+    } catch (e) {
+      watchWarnings.push(String(e.message || e));
+      break; // likely rate-limited: stop, retry next check
+    }
   }
   if (missing.length) await chrome.storage.local.set({ userIds });
+  const pending = missing.length - LOOKUPS_PER_CHECK;
+  if (pending > 0) watchWarnings.push(`Looking up ${pending} more @handles over the next checks`);
+
   const names = {};
   for (const h of handles) {
     if (/^\d+$/.test(h)) names[h] = h;
     else if (userIds[h.toLowerCase()]) names[userIds[h.toLowerCase()].id] = userIds[h.toLowerCase()].name;
-    else throw new Error(`Couldn't find @${h} — check spelling, or enter their numeric user ID (tweeterid.com)`);
   }
   return names;
 }
@@ -275,15 +291,28 @@ let importChain = Promise.resolve(); // batches arrive fast; apply them one at a
 function addFollowing(tabId, users) {
   importChain = importChain.then(async () => {
     const { importTab } = await chrome.storage.session.get("importTab");
-    if (tabId !== importTab || !Array.isArray(users)) return;
-    const { watchList = {}, importState } = await chrome.storage.local.get(["watchList", "importState"]);
-    let added = 0;
-    for (const u of users) {
-      if (/^\d+$/.test(u.id) && !watchList[u.id]) { watchList[u.id] = String(u.name); added++; }
-    }
-    await chrome.storage.local.set({ watchList, importState: { ...importState, added: importState.added + added } });
+    if (tabId === importTab) await mergeWatchList(users);
   });
   return importChain;
+}
+
+// Users from a CSV that has both ids and usernames.
+function importUsers(users, source) {
+  importChain = importChain.then(async () => {
+    await chrome.storage.local.set({ importState: { running: false, account: source, csv: true, added: 0, ts: Date.now() } });
+    await mergeWatchList(users);
+  });
+  return importChain;
+}
+
+async function mergeWatchList(users) {
+  if (!Array.isArray(users)) return;
+  const { watchList = {}, importState } = await chrome.storage.local.get(["watchList", "importState"]);
+  let added = 0;
+  for (const u of users) {
+    if (/^\d+$/.test(u.id) && !watchList[u.id]) { watchList[u.id] = String(u.name); added++; }
+  }
+  await chrome.storage.local.set({ watchList, importState: { ...importState, added: importState.added + added } });
 }
 
 function finishImport(tabId) {
