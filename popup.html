@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  :root { --bg:#0f1419; --card:#16181c; --line:#2f3336; --text:#e7e9ea; --dim:#71767b; --blue:#1d9bf0; --green:#00ba7c; --red:#f4212e; --amber:#ffad1f; }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system, Segoe UI, Roboto, sans-serif; width:360px; margin:0; padding:14px; background:var(--bg); color:var(--text); font-size:13px; }
+  header { display:flex; align-items:center; justify-content:space-between; }
+  h1 { font-size:16px; margin:0; }
+  .pill { font-size:11px; padding:3px 8px; border-radius:99px; background:var(--line); color:var(--dim); }
+  .pill.ok { color:var(--green); } .pill.err { color:var(--red); }
+  #statusText { font-size:12px; color:var(--dim); margin:6px 0 10px; }
+  #statusText.err { color:var(--red); }
+  .row { display:flex; gap:6px; }
+  button { flex:1; border:none; border-radius:99px; padding:8px; font-weight:600; cursor:pointer; background:var(--line); color:var(--text); font-size:13px; }
+  button.primary { background:var(--blue); color:#fff; }
+  button:hover { filter:brightness(1.15); }
+  #msg { font-size:12px; min-height:16px; margin-top:6px; }
+  #msg.ok { color:var(--green); } #msg.err { color:var(--red); }
+  h2 { font-size:12px; text-transform:uppercase; letter-spacing:.05em; color:var(--dim); margin:14px 0 6px; }
+  #alerts { display:flex; flex-direction:column; gap:6px; max-height:260px; overflow:auto; }
+  .card { display:block; background:var(--card); border:1px solid var(--line); border-radius:10px; padding:9px 10px; color:inherit; text-decoration:none; }
+  .card:hover { border-color:var(--blue); }
+  .top { display:flex; justify-content:space-between; gap:8px; }
+  .host { font-weight:700; } .time { color:var(--dim); font-size:11px; white-space:nowrap; }
+  .title { margin:3px 0 6px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .badge { font-size:11px; }
+  .badge.sent { color:var(--green); } .badge.retrying { color:var(--amber); } .badge.failed { color:var(--red); }
+  .empty { color:var(--dim); text-align:center; padding:16px 0; border:1px dashed var(--line); border-radius:10px; }
+  details { margin-top:14px; border-top:1px solid var(--line); padding-top:10px; }
+  summary { cursor:pointer; color:var(--dim); font-size:12px; text-transform:uppercase; letter-spacing:.05em; }
+  label { font-size:12px; color:var(--dim); display:block; margin-top:10px; }
+  input, textarea { width:100%; background:#202327; border:1px solid var(--line); color:var(--text); border-radius:6px; padding:7px; margin-top:3px; font-size:13px; font-family:inherit; }
+  textarea { height:48px; resize:vertical; }
+  details .row { margin-top:12px; }
+</style>
+</head>
+<body>
+  <header><h1>🎙️ X Space Alert</h1><span id="pill" class="pill">…</span></header>
+  <div id="statusText">Not checked yet</div>
+
+  <div class="row">
+    <button id="check">Check now</button>
+    <button id="test">Send test email</button>
+  </div>
+  <div id="msg"></div>
+
+  <h2>Alerts (last 3 days)</h2>
+  <div id="alerts"></div>
+
+  <details id="settingsBox">
+    <summary>Settings</summary>
+    <label>Only these @handles (comma or new line, @ optional; empty = everyone you follow)</label>
+    <textarea id="handles" placeholder="empty = everyone you follow"></textarea>
+    <label>Check every (minutes, min 2)</label>
+    <input type="number" id="interval" min="2" value="5">
+    <label>EmailJS Public Key</label>
+    <input id="pubKey">
+    <label>EmailJS Service ID</label>
+    <input id="serviceId" placeholder="service_xxxx">
+    <label>EmailJS Template ID</label>
+    <input id="templateId" placeholder="template_xxxx">
+    <label>Send alerts to</label>
+    <input id="toEmail" type="email" placeholder="you@gmail.com">
+    <div class="row"><button id="save" class="primary">Save</button></div>
+  </details>
+<script src="popup.js"></script>
+</body>
+</html>
