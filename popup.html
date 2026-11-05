@@ -61,6 +61,12 @@
     <textarea id="handles" placeholder="elonmusk, @naval"></textarea>
     <label>Check every (minutes, min 2)</label>
     <input type="number" id="interval" min="2" value="5">
+    <label>Imported from Following lists (watched on any account you switch to)</label>
+    <div id="imported" style="margin-top:4px">None yet</div>
+    <div class="row">
+      <button id="import">Import from open Following tab</button>
+      <button id="clearImported" style="flex:none;padding:8px 14px">Clear</button>
+    </div>
     <label>EmailJS 200-email month resets on day (see EmailJS dashboard, e.g. 3)</label>
     <input type="number" id="resetDay" min="1" max="28" value="1">
     <label>EmailJS Public Key</label>

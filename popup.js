@@ -38,12 +38,17 @@ $("debug").onclick = async () => {
   show("✅ Debug info copied — paste it to whoever is helping you", true);
 };
 
-$("check").onclick = () => run("checkNow", "Checking…", "✅ Checked");
-$("test").onclick = () => run("testEmail", "Sending…", "✅ Test email sent — check inbox/spam");
+$("check").onclick = () => run({ type: "checkNow" }, "Checking…", "✅ Checked");
+$("test").onclick = () => run({ type: "testEmail" }, "Sending…", "✅ Test email sent — check inbox/spam");
+$("import").onclick = async () => {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  run({ type: "startImport", tabId: tab.id }, "Starting import…", "⏳ Importing — the tab scrolls by itself, you can close this popup");
+};
+$("clearImported").onclick = () => run({ type: "clearImported" }, "Clearing…", "✅ Cleared imported people");
 
-async function run(type, busy, done) {
+async function run(msg, busy, done) {
   show(busy, true);
-  const r = await chrome.runtime.sendMessage({ type });
+  const r = await chrome.runtime.sendMessage(msg);
   r.ok ? show(done, true) : show("❌ " + r.error, false);
 }
 
@@ -56,7 +61,15 @@ const fmt = (ts) => new Date(ts).toLocaleString([], { month: "short", day: "nume
 const BADGE = { sent: "✓ Email sent", retrying: "⟳ Email pending — retrying", failed: "✕ Email failed" };
 
 async function render() {
-  const { status, alerts = [], emailUsage } = await chrome.storage.local.get(["status", "alerts", "emailUsage"]);
+  const { status, alerts = [], emailUsage, watchList = {}, importState } =
+    await chrome.storage.local.get(["status", "alerts", "emailUsage", "watchList", "importState"]);
+
+  const total = Object.keys(watchList).length;
+  $("imported").textContent = importState?.running
+    ? `⏳ Importing @${importState.account}'s Following… ${importState.added} added so far`
+    : total
+      ? `${total} people watched` + (importState ? ` · last import @${importState.account} added ${importState.added}` : "")
+      : "None yet";
   const { settings } = await chrome.storage.sync.get("settings");
 
   const period = quotaPeriod(settings?.quotaResetDay || 1);

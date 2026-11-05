@@ -14,6 +14,11 @@ add in Settings that you don't follow. Runs while Chrome is open.
 - Subject: `{{subject}}`
 - Body can use `{{handle}}`, `{{space_title}}`, `{{link}}`, `{{message}}`.
 
+## Watch follows from your other X accounts
+Switch to the other account → its profile → **Following** → open the popup →
+Settings → **Import from open Following tab**. The tab reloads and scrolls by
+itself; everyone it lists is then watched whichever account you're on.
+
 ## Notes
 - Checks every 5 min by default (min 2). Lower = more risk of X rate-limiting.
 - Each Space alerts once; failed emails retry on every check (up to 10 tries).

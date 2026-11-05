@@ -48,11 +48,15 @@ chrome.notifications.onClicked.addListener((id) => {
   if (id.startsWith("https://")) chrome.tabs.create({ url: id });
 });
 
-chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
+chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   const job = msg.type === "checkNow" ? checkSpaces()
     : msg.type === "testEmail" ? getSettings().then((s) => sendEmail(s, {
         id: "test", host: "@test", title: "Test alert from X Space Alert", link: "https://x.com/i/spaces",
       }))
+    : msg.type === "startImport" ? startImport(msg.tabId)
+    : msg.type === "followingBatch" ? addFollowing(sender.tab?.id, msg.users)
+    : msg.type === "importDone" ? finishImport(sender.tab?.id)
+    : msg.type === "clearImported" ? chrome.storage.local.set({ watchList: {}, importState: null })
     : null;
   if (!job) return false;
   job.then(() => reply({ ok: true }), (e) => reply({ ok: false, error: String(e.message || e) }));
@@ -129,11 +133,17 @@ async function fetchFollowedSpaces() {
 
 // Spaces from extra @handles you don't follow — the same data X uses to draw the
 // purple "live" ring on avatars. One request per check for all of them.
+// Watched = imported Following lists (watchList) + handles typed in Settings.
 async function fetchWatchedSpaces(handles) {
-  if (!handles.length) return [];
-  const names = await resolveUserIds(handles); // id -> screen name
-  const ids = Object.keys(names).join(",");
-  return collectSpaces(await xFetch(`https://x.com/i/api/fleets/v1/avatar_content?user_ids=${ids}&only_spaces=true`), names);
+  const { watchList = {} } = await chrome.storage.local.get("watchList"); // id -> screen name
+  const names = { ...watchList, ...(handles.length ? await resolveUserIds(handles) : {}) };
+  const ids = Object.keys(names);
+  const spaces = [];
+  for (let i = 0; i < ids.length; i += 100) { // keep URLs a sane length
+    const batch = ids.slice(i, i + 100).join(",");
+    spaces.push(...collectSpaces(await xFetch(`https://x.com/i/api/fleets/v1/avatar_content?user_ids=${batch}&only_spaces=true`), names));
+  }
+  return spaces;
 }
 
 // @handle -> numeric user id, looked up once and remembered. Digits are taken as an id.
@@ -228,6 +238,63 @@ function collectSpaces(data, names) {
     for (const [k, v] of Object.entries(o)) walk(v, /^\d+$/.test(k) ? k : ctxId);
   })(data);
   return [...found.values()];
+}
+
+// ---------- import a Following list ----------
+// Reload the open x.com/<account>/following tab and scroll it to the end; hook.js
+// passes each page of users X loads. Only batches from that tab are accepted.
+
+async function startImport(tabId) {
+  const tab = await chrome.tabs.get(tabId);
+  const account = tab.url?.match(/^https:\/\/x\.com\/([^/?#]+)\/following/)?.[1];
+  if (!account) throw new Error("Open an account's Following page on x.com (profile → Following), then click Import");
+  await chrome.storage.session.set({ importTab: tabId });
+  await chrome.storage.local.set({ importState: { running: true, account, added: 0 } });
+  const loaded = new Promise((resolve) => {
+    chrome.tabs.onUpdated.addListener(function done(id, info) {
+      if (id === tabId && info.status === "complete") { chrome.tabs.onUpdated.removeListener(done); resolve(); }
+    });
+  });
+  await chrome.tabs.reload(tabId); // so hook.js sees the first page of the list too
+  await loaded;
+  await chrome.scripting.executeScript({ target: { tabId }, func: scrollToEnd });
+}
+
+// Runs in the tab: keep scrolling until the list stops growing for ~10s.
+function scrollToEnd() {
+  let height = 0, still = 0;
+  const timer = setInterval(() => {
+    window.scrollTo(0, document.body.scrollHeight);
+    if (document.body.scrollHeight === height) still++;
+    else { still = 0; height = document.body.scrollHeight; }
+    if (still >= 7) { clearInterval(timer); chrome.runtime.sendMessage({ type: "importDone" }); }
+  }, 1500);
+}
+
+let importChain = Promise.resolve(); // batches arrive fast; apply them one at a time
+function addFollowing(tabId, users) {
+  importChain = importChain.then(async () => {
+    const { importTab } = await chrome.storage.session.get("importTab");
+    if (tabId !== importTab || !Array.isArray(users)) return;
+    const { watchList = {}, importState } = await chrome.storage.local.get(["watchList", "importState"]);
+    let added = 0;
+    for (const u of users) {
+      if (/^\d+$/.test(u.id) && !watchList[u.id]) { watchList[u.id] = String(u.name); added++; }
+    }
+    await chrome.storage.local.set({ watchList, importState: { ...importState, added: importState.added + added } });
+  });
+  return importChain;
+}
+
+function finishImport(tabId) {
+  importChain = importChain.then(async () => {
+    const { importTab } = await chrome.storage.session.get("importTab");
+    if (tabId !== importTab) return;
+    await chrome.storage.session.remove("importTab");
+    const { importState } = await chrome.storage.local.get("importState");
+    await chrome.storage.local.set({ importState: { ...importState, running: false, ts: Date.now() } });
+  });
+  return importChain;
 }
 
 // ---------- email ----------
